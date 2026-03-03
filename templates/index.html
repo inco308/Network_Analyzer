@@ -1,0 +1,503 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>网络流量分析与异常检测系统</title>
+    <style>
+        * { margin: 0; padding: 0; box-sizing: border-box; }
+        body { font-family: 'Segoe UI', Tahoma, Geneva, Verdana, sans-serif; background: #0f172a; color: #e2e8f0; }
+        .container { display: flex; height: 100vh; }
+        .sidebar { width: 380px; background: #1e293b; padding: 20px; overflow-y: auto; border-right: 1px solid #334155; }
+        .main { flex: 1; display: flex; flex-direction: column; }
+        .header { padding: 20px; background: #1e293b; border-bottom: 1px solid #334155; }
+        .header h1 { font-size: 24px; color: #60a5fa; }
+        .content { flex: 1; padding: 20px; overflow-y: auto; }
+        
+        .section { margin-bottom: 25px; }
+        .section-title { font-size: 16px; font-weight: 600; margin-bottom: 12px; color: #94a3b8; display: flex; align-items: center; gap: 8px; }
+        .section-title::before { content: ''; width: 4px; height: 16px; background: #60a5fa; border-radius: 2px; }
+        
+        .btn { width: 100%; padding: 12px 16px; background: linear-gradient(135deg, #3b82f6, #2563eb); border: none; border-radius: 8px; color: white; font-weight: 600; cursor: pointer; transition: all 0.2s; margin-bottom: 10px; }
+        .btn:hover { transform: translateY(-2px); box-shadow: 0 4px 12px rgba(59, 130, 246, 0.4); }
+        .btn:disabled { opacity: 0.5; cursor: not-allowed; transform: none; }
+        .btn-secondary { background: linear-gradient(135deg, #10b981, #059669); }
+        .btn-warning { background: linear-gradient(135deg, #f59e0b, #d97706); }
+        
+        .file-input { display: none; }
+        .file-label { display: block; padding: 30px; border: 2px dashed #475569; border-radius: 12px; text-align: center; cursor: pointer; transition: all 0.2s; }
+        .file-label:hover { border-color: #60a5fa; background: rgba(96, 165, 250, 0.1); }
+        .file-label span { display: block; color: #94a3b8; }
+        .file-label .icon { font-size: 32px; margin-bottom: 8px; }
+        
+        .stats { display: grid; grid-template-columns: repeat(3, 1fr); gap: 10px; margin-bottom: 20px; }
+        .stat-card { background: #0f172a; padding: 15px; border-radius: 10px; text-align: center; border: 1px solid #334155; }
+        .stat-value { font-size: 24px; font-weight: 700; color: #60a5fa; }
+        .stat-label { font-size: 12px; color: #94a3b8; margin-top: 4px; }
+        
+        .input-group { margin-bottom: 12px; }
+        .input-group label { display: block; font-size: 13px; color: #94a3b8; margin-bottom: 6px; }
+        .input-group input { width: 100%; padding: 10px 14px; background: #0f172a; border: 1px solid #334155; border-radius: 6px; color: #e2e8f0; font-size: 14px; }
+        .input-group input:focus { outline: none; border-color: #60a5fa; }
+        
+        .result-box { background: #0f172a; border: 1px solid #334155; border-radius: 10px; max-height: 400px; overflow-y: auto; }
+        .result-item { padding: 12px 16px; border-bottom: 1px solid #334155; font-size: 13px; }
+        .result-item:last-child { border-bottom: none; }
+        .result-item strong { color: #60a5fa; }
+        
+        .graph-container { width: 100%; height: 600px; background: #0f172a; border: 1px solid #334155; border-radius: 12px; margin-top: 20px; position: relative; }
+        .tabs { display: flex; gap: 8px; margin-bottom: 15px; }
+        .tab { padding: 8px 16px; background: #0f172a; border: 1px solid #334155; border-radius: 6px; cursor: pointer; font-size: 13px; }
+        .tab.active { background: #3b82f6; border-color: #3b82f6; }
+        .tab-content { display: none; }
+        .tab-content.active { display: block; }
+        .checkbox-group { display: flex; align-items: center; gap: 8px; margin-bottom: 12px; }
+        .checkbox-group input { width: auto; }
+        
+        .node-circle { fill: #3b82f6; stroke: #1e40af; stroke-width: 2; }
+        .edge-line { stroke: #64748b; stroke-width: 1.5; fill: none; }
+        .node-label { font-family: 'Segoe UI', sans-serif; font-size: 11px; fill: #e2e8f0; pointer-events: all; cursor: default; }
+        .node-label:hover { fill: #60a5fa; font-weight: 600; }
+    </style>
+</head>
+<body>
+    <div class="container">
+        <div class="sidebar">
+            <div class="section">
+                <div class="section-title">数据加载</div>
+                <label class="file-label">
+                    <input type="file" class="file-input" id="fileInput" accept=".csv">
+                    <span class="icon">📁</span>
+                    <span>点击上传 network_data.csv</span>
+                </label>
+                <div id="stats" class="stats" style="display: none;">
+                    <div class="stat-card">
+                        <div class="stat-value" id="nodeCount">-</div>
+                        <div class="stat-label">节点数</div>
+                    </div>
+                    <div class="stat-card">
+                        <div class="stat-value" id="edgeCount">-</div>
+                        <div class="stat-label">边数</div>
+                    </div>
+                    <div class="stat-card">
+                        <div class="stat-value" id="sessionCount">-</div>
+                        <div class="stat-label">会话数</div>
+                    </div>
+                </div>
+            </div>
+
+            <div class="section">
+                <div class="section-title">流量分析</div>
+                <button class="btn" id="btnSortTraffic" disabled>节点流量排序</button>
+                <button class="btn btn-secondary" id="btnFilterHttps" disabled>HTTPS节点筛选</button>
+                <div class="input-group">
+                    <label>单向流量阈值</label>
+                    <input type="number" id="threshold" value="0.8" step="0.1" min="0" max="1">
+                </div>
+                <button class="btn btn-warning" id="btnFilterUnidirectional" disabled>单向流量节点筛选</button>
+            </div>
+
+            <div class="section">
+                <div class="section-title">路径查找</div>
+                <div class="input-group">
+                    <label>起始IP</label>
+                    <input type="text" id="startIp" placeholder="192.168.1.1">
+                </div>
+                <div class="input-group">
+                    <label>结束IP</label>
+                    <input type="text" id="endIp" placeholder="10.0.0.1">
+                </div>
+                <button class="btn" id="btnFindPath" disabled>查找路径</button>
+            </div>
+
+            <div class="section">
+                <div class="section-title">扩展功能</div>
+                <div class="input-group">
+                    <label>星型结构最小边数</label>
+                    <input type="number" id="minEdges" value="20" min="1">
+                </div>
+                <button class="btn btn-secondary" id="btnFindStars" disabled>检测星型结构</button>
+                <hr style="border-color: #334155; margin: 15px 0;">
+                <div class="input-group">
+                    <label>目标IP</label>
+                    <input type="text" id="addr1" placeholder="192.168.1.100">
+                </div>
+                <div class="input-group">
+                    <label>IP范围起始</label>
+                    <input type="text" id="addr2" placeholder="192.168.1.1">
+                </div>
+                <div class="input-group">
+                    <label>IP范围结束</label>
+                    <input type="text" id="addr3" placeholder="192.168.1.255">
+                </div>
+                <div class="checkbox-group">
+                    <input type="checkbox" id="isAllowed" checked>
+                    <label for="isAllowed" style="margin: 0;">允许此范围</label>
+                </div>
+                <button class="btn btn-warning" id="btnCheckSecurity" disabled>检查安全规则</button>
+            </div>
+        </div>
+
+        <div class="main">
+            <div class="header">
+                <h1>🌐 网络流量分析与异常检测系统</h1>
+            </div>
+            <div class="content">
+                <div class="tabs">
+                    <div class="tab active" data-tab="results">分析结果</div>
+                    <div class="tab" data-tab="graph">图可视化</div>
+                </div>
+                
+                <div class="tab-content active" id="results">
+                    <div id="resultBox" class="result-box">
+                        <div class="result-item" style="color: #94a3b8;">请先上传数据文件</div>
+                    </div>
+                </div>
+                
+                <div class="tab-content" id="graph">
+                    <button class="btn btn-secondary" id="btnShowGraph" disabled style="width: auto; margin-bottom: 15px;">显示图</button>
+                    <div id="graphContainer" class="graph-container" style="display: none;"></div>
+                </div>
+            </div>
+        </div>
+    </div>
+
+    <script>
+        let dataLoaded = false;
+
+        const tabs = document.querySelectorAll('.tab');
+        const tabContents = document.querySelectorAll('.tab-content');
+        tabs.forEach(tab => {
+            tab.addEventListener('click', () => {
+                tabs.forEach(t => t.classList.remove('active'));
+                tabContents.forEach(c => c.classList.remove('active'));
+                tab.classList.add('active');
+                document.getElementById(tab.dataset.tab).classList.add('active');
+            });
+        });
+
+        document.getElementById('fileInput').addEventListener('change', async (e) => {
+            const file = e.target.files[0];
+            if (!file) return;
+            const formData = new FormData();
+            formData.append('file', file);
+
+            try {
+                const res = await fetch('/upload', { method: 'POST', body: formData });
+                const data = await res.json();
+                if (data.success) {
+                    dataLoaded = true;
+                    document.getElementById('nodeCount').textContent = data.node_count;
+                    document.getElementById('edgeCount').textContent = data.edge_count;
+                    document.getElementById('sessionCount').textContent = data.session_count;
+                    document.getElementById('stats').style.display = 'grid';
+                    enableButtons();
+                    showResults([{ type: 'info', text: `数据加载成功！节点数: ${data.node_count}, 边数: ${data.edge_count}, 会话数: ${data.session_count}` }]);
+                }
+            } catch (err) {
+                showResults([{ type: 'error', text: '加载失败: ' + err.message }]);
+            }
+        });
+
+        function enableButtons() {
+            ['btnSortTraffic', 'btnFilterHttps', 'btnFilterUnidirectional', 'btnFindPath', 'btnFindStars', 'btnCheckSecurity', 'btnShowGraph'].forEach(id => {
+                document.getElementById(id).disabled = false;
+            });
+        }
+
+        function showResults(items) {
+            const box = document.getElementById('resultBox');
+            let index = 1;
+            box.innerHTML = items.map(item => {
+                if (item.type === 'error') return `<div class="result-item" style="color:#ef4444;">❌ ${item.text}</div>`;
+                if (item.type === 'info') return `<div class="result-item" style="color:#60a5fa;">ℹ️ ${item.text}</div>`;
+                if (item.type === 'path') return `<div class="result-item"><strong>${item.title}</strong><br>${item.path}</div>`;
+                if (item.type === 'star') return `<div class="result-item"><strong>⭐ ${item.center}</strong><br>${item.leaves.join(', ')}</div>`;
+                if (item.type === 'session') return `<div class="result-item"><span style="color:#94a3b8; margin-right:8px;">${index++}.</span><strong>${item.source} → ${item.destination}</strong> (协议:${item.protocol}, 端口:${item.src_port}→${item.dst_port}, 大小:${item.data_size}, 时长:${item.duration})</div>`;
+                return `<div class="result-item"><span style="color:#94a3b8; margin-right:8px;">${index++}.</span><strong>${item.ip}</strong> - ${item.value}</div>`;
+            }).join('') || '<div class="result-item" style="color:#94a3b8;">无结果</div>';
+        }
+
+        document.getElementById('btnSortTraffic').addEventListener('click', async () => {
+            const res = await fetch('/sort_traffic');
+            const data = await res.json();
+            showResults(data.map(([ip, total]) => ({ ip, value: `总流量: ${total.toLocaleString()} bytes` })));
+        });
+
+        document.getElementById('btnFilterHttps').addEventListener('click', async () => {
+            const res = await fetch('/filter_https');
+            const data = await res.json();
+            showResults(data.map(([ip, total]) => ({ ip, value: `HTTPS流量: ${total.toLocaleString()} bytes` })));
+        });
+
+        document.getElementById('btnFilterUnidirectional').addEventListener('click', async () => {
+            const threshold = parseFloat(document.getElementById('threshold').value);
+            const res = await fetch(`/filter_unidirectional?threshold=${threshold}`);
+            const data = await res.json();
+            showResults(data.map(([ip, total, ratio]) => ({ ip, value: `总流量: ${total.toLocaleString()} bytes, 发出占比: ${(ratio*100).toFixed(1)}%` })));
+        });
+
+        document.getElementById('btnFindPath').addEventListener('click', async () => {
+            const startIp = document.getElementById('startIp').value;
+            const endIp = document.getElementById('endIp').value;
+            const res = await fetch('/find_path', {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify({ start_ip: startIp, end_ip: endIp })
+            });
+            const data = await res.json();
+            const items = [];
+            if (data.min_congestion.path) items.push({ type: 'path', title: '拥塞最小路径 (拥塞值: ' + data.min_congestion.congestion.toFixed(2) + ')', path: data.min_congestion.path.join(' → ') });
+            else items.push({ type: 'info', text: '未找到拥塞最小路径' });
+            if (data.min_hop.path) items.push({ type: 'path', title: '跳数最小路径 (拥塞值: ' + data.min_hop.congestion.toFixed(2) + ', 跳数: ' + (data.min_hop.path.length-1) + ')', path: data.min_hop.path.join(' → ') });
+            else items.push({ type: 'info', text: '未找到跳数最小路径' });
+            showResults(items);
+        });
+
+        document.getElementById('btnFindStars').addEventListener('click', async () => {
+            const minEdges = parseInt(document.getElementById('minEdges').value);
+            const res = await fetch(`/find_stars?min_edges=${minEdges}`);
+            const data = await res.json();
+            showResults(data.map(s => ({ type: 'star', center: s.center, leaves: s.leaves })));
+        });
+
+        document.getElementById('btnCheckSecurity').addEventListener('click', async () => {
+            const res = await fetch('/check_security', {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify({
+                    addr1: document.getElementById('addr1').value,
+                    addr2: document.getElementById('addr2').value,
+                    addr3: document.getElementById('addr3').value,
+                    is_allowed: document.getElementById('isAllowed').checked
+                })
+            });
+            const data = await res.json();
+            showResults(data.map(s => ({ type: 'session', ...s })));
+        });
+
+        document.getElementById('btnShowGraph').addEventListener('click', async () => {
+            const res = await fetch('/get_graph_data');
+            const data = await res.json();
+            const container = document.getElementById('graphContainer');
+            container.style.display = 'block';
+            
+            renderGraph(data.nodes, data.edges, container);
+        });
+
+        function renderGraph(nodes, edges, container) {
+            const width = container.clientWidth;
+            const height = container.clientHeight;
+            
+            const nodePositions = {};
+            const centerX = width / 2;
+            const centerY = height / 2;
+            
+            const displayNodes = nodes;
+            const nodeIdSet = new Set(displayNodes.map(n => n.id));
+            const displayEdges = edges.filter(e => nodeIdSet.has(e.source) && nodeIdSet.has(e.target));
+            
+            displayNodes.forEach((node, i) => {
+                const angle = (2 * Math.PI * i) / displayNodes.length;
+                const radius = Math.min(width, height) / 2 - 80;
+                nodePositions[node.id] = {
+                    x: centerX + radius * Math.cos(angle),
+                    y: centerY + radius * Math.sin(angle),
+                    baseSize: Math.max(10, Math.min(25, node.size)),
+                    originalNode: node
+                };
+            });
+
+            container.innerHTML = `
+                <svg id="graph-svg" width="${width}" height="${height}" style="background: #0f172a; cursor: grab;">
+                    <g id="zoom-group">
+                        <g id="edges-group"></g>
+                        <g id="nodes-group"></g>
+                    </g>
+                </svg>
+                <div style="position: absolute; bottom: 10px; right: 10px; background: #1e293b; padding: 8px 12px; border-radius: 6px; font-size: 12px; border: 1px solid #334155;">
+                    <div style="margin-bottom: 4px;">🖱️ 滚轮缩放</div>
+                    <div style="margin-bottom: 4px;">✋ 拖拽平移</div>
+                    <div>💡 悬停节点查看完整IP</div>
+                </div>
+            `;
+            
+            const svg = document.getElementById('graph-svg');
+            const zoomGroup = document.getElementById('zoom-group');
+            const edgesGroup = document.getElementById('edges-group');
+            const nodesGroup = document.getElementById('nodes-group');
+            
+            let scale = 1;
+            let translateX = 0;
+            let translateY = 0;
+            let isDragging = false;
+            let startX, startY;
+            
+            function updateGraphVisuals() {
+                edgesGroup.innerHTML = '';
+                nodesGroup.innerHTML = '';
+                
+                const fontSize = Math.max(8, 11 / Math.sqrt(scale));
+                const strokeWidth = Math.max(0.5, 1.5 / scale);
+                const nodeStrokeWidth = Math.max(1, 2 / scale);
+                
+                displayEdges.forEach(edge => {
+                    const from = nodePositions[edge.source];
+                    const to = nodePositions[edge.target];
+                    if (from && to) {
+                        const dx = to.x - from.x;
+                        const dy = to.y - from.y;
+                        const dist = Math.sqrt(dx * dx + dy * dy);
+                        const nodeRadius = from.baseSize;
+                        const offset = nodeRadius + 5;
+                        const endX = to.x - (dx / dist) * offset;
+                        const endY = to.y - (dy / dist) * offset;
+                        const startX = from.x + (dx / dist) * nodeRadius;
+                        const startY = from.y + (dy / dist) * nodeRadius;
+                        
+                        const line = document.createElementNS('http://www.w3.org/2000/svg', 'line');
+                        line.setAttribute('x1', startX);
+                        line.setAttribute('y1', startY);
+                        line.setAttribute('x2', endX);
+                        line.setAttribute('y2', endY);
+                        line.setAttribute('stroke', '#64748b');
+                        line.setAttribute('stroke-width', strokeWidth);
+                        edgesGroup.appendChild(line);
+                        
+                        const angle = Math.atan2(dy, dx);
+                        const arrowSize = 6 / Math.sqrt(scale);
+                        const arrow1X = endX - arrowSize * Math.cos(angle - Math.PI / 6);
+                        const arrow1Y = endY - arrowSize * Math.sin(angle - Math.PI / 6);
+                        const arrow2X = endX - arrowSize * Math.cos(angle + Math.PI / 6);
+                        const arrow2Y = endY - arrowSize * Math.sin(angle + Math.PI / 6);
+                        
+                        const polygon = document.createElementNS('http://www.w3.org/2000/svg', 'polygon');
+                        polygon.setAttribute('points', `${endX},${endY} ${arrow1X},${arrow1Y} ${arrow2X},${arrow2Y}`);
+                        polygon.setAttribute('fill', '#64748b');
+                        edgesGroup.appendChild(polygon);
+                    }
+                });
+
+                displayNodes.forEach(node => {
+                    const pos = nodePositions[node.id];
+                    if (pos) {
+                        const angle = Math.atan2(pos.y - centerY, pos.x - centerX);
+                        const labelOffset = pos.baseSize + 15;
+                        const labelX = pos.x + Math.cos(angle) * labelOffset;
+                        const labelY = pos.y + Math.sin(angle) * labelOffset;
+                        const nodeRadius = pos.baseSize / Math.sqrt(scale);
+                        
+                        const circle = document.createElementNS('http://www.w3.org/2000/svg', 'circle');
+                        circle.setAttribute('cx', pos.x);
+                        circle.setAttribute('cy', pos.y);
+                        circle.setAttribute('r', nodeRadius);
+                        circle.setAttribute('fill', '#3b82f6');
+                        circle.setAttribute('stroke', '#1e40af');
+                        circle.setAttribute('stroke-width', nodeStrokeWidth);
+                        nodesGroup.appendChild(circle);
+                        
+                        const text = document.createElementNS('http://www.w3.org/2000/svg', 'text');
+                        text.setAttribute('x', labelX);
+                        text.setAttribute('y', labelY);
+                        text.setAttribute('text-anchor', 'middle');
+                        text.setAttribute('dominant-baseline', 'middle');
+                        text.setAttribute('font-family', 'Segoe UI, sans-serif');
+                        text.setAttribute('font-size', fontSize);
+                        text.setAttribute('fill', '#e2e8f0');
+                        text.setAttribute('data-full-label', node.label);
+                        text.textContent = node.label;
+                        text.style.cursor = 'default';
+                        nodesGroup.appendChild(text);
+                    }
+                });
+            }
+            
+            function updateTransform() {
+                zoomGroup.setAttribute('transform', `translate(${translateX}, ${translateY}) scale(${scale})`);
+                updateGraphVisuals();
+            }
+            
+            updateGraphVisuals();
+            
+            svg.addEventListener('wheel', (e) => {
+                e.preventDefault();
+                const delta = e.deltaY > 0 ? 0.9 : 1.1;
+                const newScale = scale * delta;
+                if (newScale >= 0.1 && newScale <= 10) {
+                    const rect = svg.getBoundingClientRect();
+                    const mouseX = e.clientX - rect.left;
+                    const mouseY = e.clientY - rect.top;
+                    translateX = mouseX - (mouseX - translateX) * delta;
+                    translateY = mouseY - (mouseY - translateY) * delta;
+                    scale = newScale;
+                    updateTransform();
+                }
+            });
+            
+            svg.addEventListener('mousedown', (e) => {
+                isDragging = true;
+                startX = e.clientX - translateX;
+                startY = e.clientY - translateY;
+                svg.style.cursor = 'grabbing';
+            });
+            
+            svg.addEventListener('mousemove', (e) => {
+                if (isDragging) {
+                    translateX = e.clientX - startX;
+                    translateY = e.clientY - startY;
+                    zoomGroup.setAttribute('transform', `translate(${translateX}, ${translateY}) scale(${scale})`);
+                }
+            });
+            
+            svg.addEventListener('mouseup', () => {
+                isDragging = false;
+                svg.style.cursor = 'grab';
+            });
+            
+            svg.addEventListener('mouseleave', () => {
+                isDragging = false;
+                svg.style.cursor = 'grab';
+            });
+
+            let tooltip = document.createElement('div');
+            tooltip.style.cssText = `
+                position: absolute;
+                background: #1e293b;
+                color: #e2e8f0;
+                padding: 6px 10px;
+                border-radius: 4px;
+                font-size: 12px;
+                pointer-events: none;
+                z-index: 1000;
+                border: 1px solid #334155;
+                display: none;
+            `;
+            container.appendChild(tooltip);
+
+            svg.addEventListener('mouseover', (e) => {
+                if (e.target.tagName === 'text' && e.target.hasAttribute('data-full-label')) {
+                    const fullLabel = e.target.getAttribute('data-full-label');
+                    tooltip.textContent = fullLabel;
+                    tooltip.style.display = 'block';
+                    e.target.setAttribute('fill', '#60a5fa');
+                    e.target.setAttribute('font-weight', '600');
+                }
+            });
+
+            svg.addEventListener('mousemove', (e) => {
+                const rect = container.getBoundingClientRect();
+                tooltip.style.left = (e.clientX - rect.left + 10) + 'px';
+                tooltip.style.top = (e.clientY - rect.top - 30) + 'px';
+            });
+
+            svg.addEventListener('mouseout', (e) => {
+                if (e.target.tagName === 'text') {
+                    tooltip.style.display = 'none';
+                    e.target.setAttribute('fill', '#e2e8f0');
+                    e.target.removeAttribute('font-weight');
+                }
+            });
+        }
+    </script>
+</body>
+</html>
