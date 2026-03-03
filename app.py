@@ -1,6 +1,11 @@
 from flask import Flask, render_template, request, jsonify
 import os
+import subprocess
 import network_analyzer as na
+from scapy.all import rdpcap, IP, TCP, UDP
+import csv
+from collections import defaultdict
+import threading
 
 app = Flask(__name__)
 app.config['UPLOAD_FOLDER'] = 'uploads'
@@ -8,6 +13,9 @@ os.makedirs(app.config['UPLOAD_FOLDER'], exist_ok=True)
 
 sessions = []
 graph = None
+capture_process = None
+capture_thread = None
+is_capturing = False
 
 
 @app.route('/')
@@ -140,6 +148,222 @@ def get_graph_data():
         })
 
     return jsonify({'nodes': nodes, 'edges': edges})
+
+
+def extract_from_pcap(pcap_file):
+    sessions_data = []
+    try:
+        packets = rdpcap(pcap_file)
+        session_dict = defaultdict(lambda: {
+            'protocol': 0,
+            'src_port': 0,
+            'dst_port': 0,
+            'data_size': 0,
+            'start_time': None,
+            'end_time': None
+        })
+
+        for pkt in packets:
+            if IP in pkt:
+                ip = pkt[IP]
+                source = ip.src
+                destination = ip.dst
+                protocol = ip.proto
+                src_port = 0
+                dst_port = 0
+
+                if TCP in pkt:
+                    tcp = pkt[TCP]
+                    src_port = tcp.sport
+                    dst_port = tcp.dport
+                elif UDP in pkt:
+                    udp = pkt[UDP]
+                    src_port = udp.sport
+                    dst_port = udp.dport
+
+                key = (source, destination, src_port, dst_port, protocol)
+                session = session_dict[key]
+
+                if session['protocol'] == 0:
+                    session['protocol'] = protocol
+                    session['src_port'] = src_port
+                    session['dst_port'] = dst_port
+
+                session['data_size'] += len(pkt)
+
+                pkt_time = pkt.time
+                if session['start_time'] is None or pkt_time < session['start_time']:
+                    session['start_time'] = pkt_time
+                if session['end_time'] is None or pkt_time > session['end_time']:
+                    session['end_time'] = pkt_time
+
+        for (source, destination, src_port, dst_port, protocol), session in session_dict.items():
+            duration = 0.0
+            if session['start_time'] is not None and session['end_time'] is not None:
+                duration = session['end_time'] - session['start_time']
+
+            sessions_data.append({
+                'source': source,
+                'destination': destination,
+                'protocol': protocol,
+                'src_port': src_port,
+                'dst_port': dst_port,
+                'data_size': session['data_size'],
+                'duration': max(0.001, duration)
+            })
+    except Exception as e:
+        print(f"提取 pcap 错误: {e}")
+    
+    return sessions_data
+
+
+@app.route('/list_interfaces', methods=['GET'])
+def list_interfaces():
+    try:
+        result = subprocess.run(
+            ['tshark', '-D'],
+            capture_output=True,
+            text=True,
+            encoding='utf-8',
+            errors='ignore'
+        )
+        interfaces = []
+        lines = result.stdout.strip().split('\n')
+        for line in lines:
+            if line.strip():
+                interfaces.append(line.strip())
+        return jsonify({'interfaces': interfaces})
+    except FileNotFoundError:
+        return jsonify({'error': '未找到 tshark，请安装 Wireshark'}), 400
+    except Exception as e:
+        return jsonify({'error': str(e)}), 400
+
+
+@app.route('/start_capture', methods=['POST'])
+def start_capture():
+    global capture_process, capture_thread, is_capturing, sessions, graph
+
+    if is_capturing:
+        return jsonify({'error': '已有捕获任务正在进行'}), 400
+
+    data = request.get_json()
+    interface = data.get('interface')
+    duration = data.get('duration', 60)
+
+    if not interface:
+        return jsonify({'error': '请选择网络接口'}), 400
+
+    temp_pcap = os.path.join(app.config['UPLOAD_FOLDER'], 'temp_capture.pcap')
+
+    def capture_worker():
+        global capture_process, is_capturing, sessions, graph
+        try:
+            tshark_cmd = [
+                'tshark',
+                '-i', str(interface),
+                '-a', f'duration:{duration}',
+                '-w', temp_pcap
+            ]
+            capture_process = subprocess.Popen(tshark_cmd)
+            capture_process.wait()
+
+            if os.path.exists(temp_pcap) and os.path.getsize(temp_pcap) > 0:
+                sessions = extract_from_pcap(temp_pcap)
+                graph = na.build_graph(sessions)
+        except Exception as e:
+            print(f"捕获错误: {e}")
+        finally:
+            is_capturing = False
+            capture_process = None
+
+    is_capturing = True
+    capture_thread = threading.Thread(target=capture_worker)
+    capture_thread.start()
+
+    return jsonify({'success': True, 'duration': duration})
+
+
+@app.route('/capture_status', methods=['GET'])
+def capture_status():
+    global is_capturing, sessions, graph
+    return jsonify({
+        'capturing': is_capturing,
+        'has_data': sessions is not None and len(sessions) > 0,
+        'node_count': len(graph.graph.nodes()) if graph else 0,
+        'edge_count': len(graph.graph.edges()) if graph else 0,
+        'session_count': len(sessions) if sessions else 0
+    })
+
+
+@app.route('/stop_capture', methods=['POST'])
+def stop_capture():
+    global capture_process, is_capturing
+
+    if capture_process:
+        capture_process.terminate()
+        is_capturing = False
+
+    return jsonify({'success': True})
+
+
+@app.route('/get_subgraph', methods=['POST'])
+def get_subgraph():
+    if graph is None:
+        return jsonify({'error': 'No data loaded'}), 400
+
+    data = request.get_json()
+    target_ip = data.get('target_ip')
+
+    if not target_ip:
+        return jsonify({'error': 'Please provide target IP'}), 400
+
+    subgraph = na.get_subgraph(graph, target_ip)
+    if subgraph is None:
+        return jsonify({'error': 'IP not found in graph'}), 400
+
+    return jsonify(subgraph)
+
+
+@app.route('/list_subgraphs', methods=['GET'])
+def list_subgraphs():
+    if graph is None:
+        return jsonify({'error': 'No data loaded'}), 400
+
+    subgraphs = na.get_all_subgraphs(graph)
+    return jsonify(subgraphs)
+
+
+@app.route('/get_star_subgraph', methods=['POST'])
+def get_star_subgraph():
+    if graph is None:
+        return jsonify({'error': 'No data loaded'}), 400
+
+    data = request.get_json()
+    center_ip = data.get('center_ip')
+
+    if not center_ip:
+        return jsonify({'error': 'Please provide center IP'}), 400
+
+    subgraph = na.get_star_subgraph(graph, center_ip)
+    if subgraph is None:
+        return jsonify({'error': 'Center IP not found'}), 400
+
+    return jsonify(subgraph)
+
+
+@app.route('/get_subgraph_by_root', methods=['POST'])
+def get_subgraph_by_root():
+    if graph is None:
+        return jsonify({'error': 'No data loaded'}), 400
+
+    data = request.get_json()
+    root_id = data.get('root_id')
+
+    if root_id is None:
+        return jsonify({'error': 'Please provide root ID'}), 400
+
+    subgraph = na.get_subgraph_by_root(graph, root_id)
+    return jsonify(subgraph)
 
 
 if __name__ == '__main__':

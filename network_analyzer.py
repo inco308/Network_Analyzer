@@ -278,6 +278,66 @@ def find_star_structures(graph, min_edges=20):
     return stars
 
 
+def get_star_subgraph(graph, center_ip):
+    if center_ip not in graph.ip_to_id:
+        return None
+
+    center_id = graph.ip_to_id[center_ip]
+    in_neighbors = list(graph.graph.predecessors(center_id))
+    out_neighbors = list(graph.graph.successors(center_id))
+    connected = set(in_neighbors + out_neighbors)
+
+    valid_leaf_nodes = []
+    for leaf_id in connected:
+        leaf_in = list(graph.graph.predecessors(leaf_id))
+        leaf_out = list(graph.graph.successors(leaf_id))
+
+        only_connected_to_center = True
+
+        for n in leaf_in:
+            if n != center_id:
+                only_connected_to_center = False
+                break
+
+        if only_connected_to_center:
+            for n in leaf_out:
+                if n != center_id:
+                    only_connected_to_center = False
+                    break
+
+        if only_connected_to_center:
+            valid_leaf_nodes.append(leaf_id)
+
+    subgraph_nodes = [center_ip]
+    for leaf_id in valid_leaf_nodes:
+        subgraph_nodes.append(graph.id_to_ip[leaf_id])
+
+    subgraph_edges = []
+    for u, v, data in graph.graph.edges(data=True):
+        if u == center_id or v == center_id:
+            if (u == center_id and v in valid_leaf_nodes) or (v == center_id and u in valid_leaf_nodes):
+                subgraph_edges.append({
+                    'source': graph.id_to_ip[u],
+                    'target': graph.id_to_ip[v],
+                    'data_size': data['data'].total_data_size
+                })
+
+    nodes_with_traffic = []
+    for node_id in [center_id] + valid_leaf_nodes:
+        ip = graph.id_to_ip[node_id]
+        total_traffic = graph.get_node_total_traffic(node_id)
+        nodes_with_traffic.append({
+            'ip': ip,
+            'total_traffic': total_traffic
+        })
+
+    return {
+        'nodes': nodes_with_traffic,
+        'edges': subgraph_edges,
+        'center_ip': center_ip
+    }
+
+
 def ip_in_range(ip_str, start_str, end_str):
     try:
         ip = ipaddress.ip_address(ip_str)
@@ -286,6 +346,128 @@ def ip_in_range(ip_str, start_str, end_str):
         return start <= ip <= end
     except:
         return False
+
+
+class UnionFind:
+    def __init__(self, size):
+        self.parent = list(range(size))
+        self.rank = [0] * size
+
+    def find(self, x):
+        if self.parent[x] != x:
+            self.parent[x] = self.find(self.parent[x])
+        return self.parent[x]
+
+    def union(self, x, y):
+        x_root = self.find(x)
+        y_root = self.find(y)
+
+        if x_root == y_root:
+            return
+
+        if self.rank[x_root] < self.rank[y_root]:
+            self.parent[x_root] = y_root
+        else:
+            self.parent[y_root] = x_root
+            if self.rank[x_root] == self.rank[y_root]:
+                self.rank[x_root] += 1
+
+
+def get_subgraph(graph, target_ip):
+    if target_ip not in graph.ip_to_id:
+        return None
+
+    target_id = graph.ip_to_id[target_ip]
+    uf = UnionFind(len(graph.graph.nodes()))
+
+    for u, v in graph.graph.edges():
+        uf.union(u, v)
+
+    target_root = uf.find(target_id)
+
+    subgraph_nodes = []
+    subgraph_edges = []
+
+    for node_id in graph.graph.nodes():
+        if uf.find(node_id) == target_root:
+            ip = graph.id_to_ip[node_id]
+            total_traffic = graph.get_node_total_traffic(node_id)
+            subgraph_nodes.append({
+                'ip': ip,
+                'total_traffic': total_traffic
+            })
+
+    for u, v, data in graph.graph.edges(data=True):
+        if uf.find(u) == target_root and uf.find(v) == target_root:
+            subgraph_edges.append({
+                'source': graph.id_to_ip[u],
+                'target': graph.id_to_ip[v],
+                'data_size': data['data'].total_data_size
+            })
+
+    return {
+        'nodes': subgraph_nodes,
+        'edges': subgraph_edges,
+        'target_ip': target_ip
+    }
+
+
+def get_subgraph_by_root(graph, root_id):
+    uf = UnionFind(len(graph.graph.nodes()))
+
+    for u, v in graph.graph.edges():
+        uf.union(u, v)
+
+    subgraph_nodes = []
+    subgraph_edges = []
+
+    for node_id in graph.graph.nodes():
+        if uf.find(node_id) == root_id:
+            ip = graph.id_to_ip[node_id]
+            total_traffic = graph.get_node_total_traffic(node_id)
+            subgraph_nodes.append({
+                'ip': ip,
+                'total_traffic': total_traffic
+            })
+
+    for u, v, data in graph.graph.edges(data=True):
+        if uf.find(u) == root_id and uf.find(v) == root_id:
+            subgraph_edges.append({
+                'source': graph.id_to_ip[u],
+                'target': graph.id_to_ip[v],
+                'data_size': data['data'].total_data_size
+            })
+
+    return {
+        'nodes': subgraph_nodes,
+        'edges': subgraph_edges,
+        'root_id': root_id
+    }
+
+
+def get_all_subgraphs(graph):
+    if len(graph.graph.nodes()) == 0:
+        return []
+
+    uf = UnionFind(len(graph.graph.nodes()))
+
+    for u, v in graph.graph.edges():
+        uf.union(u, v)
+
+    subgraphs = defaultdict(list)
+    for node_id in graph.graph.nodes():
+        root = uf.find(node_id)
+        subgraphs[root].append(graph.id_to_ip[node_id])
+
+    result = []
+    for root, nodes in subgraphs.items():
+        result.append({
+            'root': root,
+            'nodes': nodes,
+            'size': len(nodes)
+        })
+
+    return sorted(result, key=lambda x: x['size'], reverse=True)
 
 
 def check_security_rules(sessions, addr1, addr2, addr3, is_allowed=True):

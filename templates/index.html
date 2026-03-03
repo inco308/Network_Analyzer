@@ -87,6 +87,23 @@
             </div>
 
             <div class="section">
+                <div class="section-title">实时捕获</div>
+                <div class="input-group">
+                    <label>网络接口</label>
+                    <select id="interfaceSelect" style="width: 100%; padding: 10px 14px; background: #0f172a; border: 1px solid #334155; border-radius: 6px; color: #e2e8f0;">
+                        <option value="">加载中...</option>
+                    </select>
+                </div>
+                <div class="input-group">
+                    <label>捕获时长（秒）</label>
+                    <input type="number" id="captureDuration" value="60" min="10" max="3600">
+                </div>
+                <button class="btn btn-secondary" id="btnStartCapture">开始捕获</button>
+                <button class="btn btn-warning" id="btnStopCapture" style="display: none;">停止捕获</button>
+                <div id="captureStatus" style="margin-top: 10px; font-size: 13px; color: #94a3b8;"></div>
+            </div>
+
+            <div class="section">
                 <div class="section-title">流量分析</div>
                 <button class="btn" id="btnSortTraffic" disabled>节点流量排序</button>
                 <button class="btn btn-secondary" id="btnFilterHttps" disabled>HTTPS节点筛选</button>
@@ -136,6 +153,16 @@
                 </div>
                 <button class="btn btn-warning" id="btnCheckSecurity" disabled>检查安全规则</button>
             </div>
+
+            <div class="section">
+                <div class="section-title">子图可视化</div>
+                <div class="input-group">
+                    <label>目标IP</label>
+                    <input type="text" id="subgraphIp" placeholder="输入要查看的IP">
+                </div>
+                <button class="btn btn-secondary" id="btnShowSubgraph" disabled>显示子图</button>
+                <button class="btn btn-warning" id="btnListSubgraphs" disabled>列出所有子图</button>
+            </div>
         </div>
 
         <div class="main">
@@ -155,7 +182,10 @@
                 </div>
                 
                 <div class="tab-content" id="graph">
-                    <button class="btn btn-secondary" id="btnShowGraph" disabled style="width: auto; margin-bottom: 15px;">显示图</button>
+                    <div style="margin-bottom: 15px;">
+                        <button class="btn btn-secondary" id="btnShowGraph" disabled style="width: auto; margin-right: 10px;">显示完整图</button>
+                        <button class="btn btn-warning" id="btnShowLastSubgraph" disabled style="width: auto;">显示子图</button>
+                    </div>
                     <div id="graphContainer" class="graph-container" style="display: none;"></div>
                 </div>
             </div>
@@ -164,6 +194,7 @@
 
     <script>
         let dataLoaded = false;
+        let captureInterval = null;
 
         const tabs = document.querySelectorAll('.tab');
         const tabContents = document.querySelectorAll('.tab-content');
@@ -174,6 +205,112 @@
                 tab.classList.add('active');
                 document.getElementById(tab.dataset.tab).classList.add('active');
             });
+        });
+
+        async function loadInterfaces() {
+            try {
+                const res = await fetch('/list_interfaces');
+                const data = await res.json();
+                const select = document.getElementById('interfaceSelect');
+                select.innerHTML = '';
+                if (data.interfaces && data.interfaces.length > 0) {
+                    data.interfaces.forEach(iface => {
+                        const option = document.createElement('option');
+                        const match = iface.match(/^(\d+)\.\s*(.*)$/);
+                        if (match) {
+                            option.value = match[1];
+                            option.textContent = iface;
+                        } else {
+                            option.value = iface;
+                            option.textContent = iface;
+                        }
+                        select.appendChild(option);
+                    });
+                } else {
+                    select.innerHTML = '<option value="">未找到可用接口</option>';
+                }
+            } catch (err) {
+                const select = document.getElementById('interfaceSelect');
+                select.innerHTML = `<option value="">加载失败: ${err.message}</option>`;
+            }
+        }
+
+        loadInterfaces();
+
+        document.getElementById('btnStartCapture').addEventListener('click', async () => {
+            const interfaceId = document.getElementById('interfaceSelect').value;
+            const duration = parseInt(document.getElementById('captureDuration').value);
+
+            if (!interfaceId) {
+                document.getElementById('captureStatus').textContent = '❌ 请选择网络接口';
+                document.getElementById('captureStatus').style.color = '#ef4444';
+                return;
+            }
+
+            try {
+                const res = await fetch('/start_capture', {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify({ interface: interfaceId, duration: duration })
+                });
+                const data = await res.json();
+
+                if (data.success) {
+                    document.getElementById('btnStartCapture').style.display = 'none';
+                    document.getElementById('btnStopCapture').style.display = 'block';
+                    document.getElementById('captureStatus').textContent = '🎯 正在捕获流量...';
+                    document.getElementById('captureStatus').style.color = '#60a5fa';
+
+                    captureInterval = setInterval(async () => {
+                        try {
+                            const statusRes = await fetch('/capture_status');
+                            const statusData = await statusRes.json();
+
+                            if (!statusData.capturing) {
+                                clearInterval(captureInterval);
+                                document.getElementById('btnStartCapture').style.display = 'block';
+                                document.getElementById('btnStopCapture').style.display = 'none';
+
+                                if (statusData.has_data) {
+                                    dataLoaded = true;
+                                    document.getElementById('nodeCount').textContent = statusData.node_count;
+                                    document.getElementById('edgeCount').textContent = statusData.edge_count;
+                                    document.getElementById('sessionCount').textContent = statusData.session_count;
+                                    document.getElementById('stats').style.display = 'grid';
+                                    enableButtons();
+                                    document.getElementById('captureStatus').textContent = '✅ 捕获完成！';
+                                    document.getElementById('captureStatus').style.color = '#10b981';
+                                    showResults([{ type: 'info', text: `数据加载成功！节点数: ${statusData.node_count}, 边数: ${statusData.edge_count}, 会话数: ${statusData.session_count}` }]);
+                                } else {
+                                    document.getElementById('captureStatus').textContent = '⚠️ 未捕获到数据';
+                                    document.getElementById('captureStatus').style.color = '#f59e0b';
+                                }
+                            }
+                        } catch (e) {
+                            console.error('状态检查错误:', e);
+                        }
+                    }, 1000);
+                }
+            } catch (err) {
+                document.getElementById('captureStatus').textContent = '❌ 错误: ' + err.message;
+                document.getElementById('captureStatus').style.color = '#ef4444';
+            }
+        });
+
+        document.getElementById('btnStopCapture').addEventListener('click', async () => {
+            try {
+                await fetch('/stop_capture', { method: 'POST' });
+                if (captureInterval) {
+                    clearInterval(captureInterval);
+                }
+                document.getElementById('btnStartCapture').style.display = 'block';
+                document.getElementById('btnStopCapture').style.display = 'none';
+                document.getElementById('captureStatus').textContent = '⚠️ 已停止捕获';
+                document.getElementById('captureStatus').style.color = '#f59e0b';
+            } catch (err) {
+                document.getElementById('captureStatus').textContent = '❌ 停止错误: ' + err.message;
+                document.getElementById('captureStatus').style.color = '#ef4444';
+            }
         });
 
         document.getElementById('fileInput').addEventListener('change', async (e) => {
@@ -199,8 +336,10 @@
             }
         });
 
+        let lastSubgraphData = null;
+
         function enableButtons() {
-            ['btnSortTraffic', 'btnFilterHttps', 'btnFilterUnidirectional', 'btnFindPath', 'btnFindStars', 'btnCheckSecurity', 'btnShowGraph'].forEach(id => {
+            ['btnSortTraffic', 'btnFilterHttps', 'btnFilterUnidirectional', 'btnFindPath', 'btnFindStars', 'btnCheckSecurity', 'btnShowGraph', 'btnShowSubgraph', 'btnListSubgraphs', 'btnShowLastSubgraph'].forEach(id => {
                 document.getElementById(id).disabled = false;
             });
         }
@@ -212,10 +351,95 @@
                 if (item.type === 'error') return `<div class="result-item" style="color:#ef4444;">❌ ${item.text}</div>`;
                 if (item.type === 'info') return `<div class="result-item" style="color:#60a5fa;">ℹ️ ${item.text}</div>`;
                 if (item.type === 'path') return `<div class="result-item"><strong>${item.title}</strong><br>${item.path}</div>`;
-                if (item.type === 'star') return `<div class="result-item"><strong>⭐ ${item.center}</strong><br>${item.leaves.join(', ')}</div>`;
+                if (item.type === 'star') {
+                    const starText = `⭐ ${item.center}：${item.leaves.join('，')}`;
+                    return `<div class="result-item" style="cursor: pointer; color: #60a5fa;" onclick="showStarGraph('${item.center}')">${starText}</div>`;
+                }
                 if (item.type === 'session') return `<div class="result-item"><span style="color:#94a3b8; margin-right:8px;">${index++}.</span><strong>${item.source} → ${item.destination}</strong> (协议:${item.protocol}, 端口:${item.src_port}→${item.dst_port}, 大小:${item.data_size}, 时长:${item.duration})</div>`;
+                if (item.type === 'subgraph') {
+                    const subgraphText = `📊 子图${index++}：大小: ${item.size} 个节点, 节点: ${item.nodes.slice(0, 5).join(', ')}${item.nodes.length > 5 ? '...' : ''}`;
+                    return `<div class="result-item" style="cursor: pointer; color: #60a5fa;" onclick="showSubgraphByRoot(${item.root})">${subgraphText}</div>`;
+                }
                 return `<div class="result-item"><span style="color:#94a3b8; margin-right:8px;">${index++}.</span><strong>${item.ip}</strong> - ${item.value}</div>`;
             }).join('') || '<div class="result-item" style="color:#94a3b8;">无结果</div>';
+        }
+
+        async function showStarGraph(centerIp) {
+            try {
+                const res = await fetch('/get_star_subgraph', {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify({ center_ip: centerIp })
+                });
+                const data = await res.json();
+
+                if (res.ok) {
+                    const nodes = data.nodes.map(n => ({ 
+                        id: n.ip, 
+                        label: n.ip, 
+                        size: Math.min(50, Math.max(5, n.total_traffic / 1000000)) 
+                    }));
+                    const edges = data.edges.map(e => ({ 
+                        source: e.source, 
+                        target: e.target, 
+                        size: Math.min(10, Math.max(1, e.data_size / 1000000)) 
+                    }));
+                    
+                    lastSubgraphData = { nodes, edges };
+                    document.getElementById('graphContainer').style.display = 'block';
+                    
+                    tabs.forEach(t => t.classList.remove('active'));
+                    tabContents.forEach(c => c.classList.remove('active'));
+                    document.querySelector('[data-tab="graph"]').classList.add('active');
+                    document.getElementById('graph').classList.add('active');
+                    
+                    renderGraph(nodes, edges, document.getElementById('graphContainer'));
+                    showResults([{ type: 'info', text: `星型结构包含 ${nodes.length} 个节点和 ${edges.length} 条边（中心: ${centerIp}）` }]);
+                } else {
+                    showResults([{ type: 'error', text: data.error }]);
+                }
+            } catch (err) {
+                showResults([{ type: 'error', text: '获取星型子图失败: ' + err.message }]);
+            }
+        }
+
+        async function showSubgraphByRoot(rootId) {
+            try {
+                const res = await fetch('/get_subgraph_by_root', {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify({ root_id: rootId })
+                });
+                const data = await res.json();
+
+                if (res.ok) {
+                    const nodes = data.nodes.map(n => ({ 
+                        id: n.ip, 
+                        label: n.ip, 
+                        size: Math.min(50, Math.max(5, n.total_traffic / 1000000)) 
+                    }));
+                    const edges = data.edges.map(e => ({ 
+                        source: e.source, 
+                        target: e.target, 
+                        size: Math.min(10, Math.max(1, e.data_size / 1000000)) 
+                    }));
+                    
+                    lastSubgraphData = { nodes, edges };
+                    document.getElementById('graphContainer').style.display = 'block';
+                    
+                    tabs.forEach(t => t.classList.remove('active'));
+                    tabContents.forEach(c => c.classList.remove('active'));
+                    document.querySelector('[data-tab="graph"]').classList.add('active');
+                    document.getElementById('graph').classList.add('active');
+                    
+                    renderGraph(nodes, edges, document.getElementById('graphContainer'));
+                    showResults([{ type: 'info', text: `子图包含 ${nodes.length} 个节点和 ${edges.length} 条边` }]);
+                } else {
+                    showResults([{ type: 'error', text: data.error }]);
+                }
+            } catch (err) {
+                showResults([{ type: 'error', text: '获取子图失败: ' + err.message }]);
+            }
         }
 
         document.getElementById('btnSortTraffic').addEventListener('click', async () => {
@@ -498,6 +722,86 @@
                 }
             });
         }
+
+        document.getElementById('btnShowSubgraph').addEventListener('click', async () => {
+            const targetIp = document.getElementById('subgraphIp').value;
+            if (!targetIp) {
+                showResults([{ type: 'error', text: '请输入目标IP' }]);
+                return;
+            }
+
+            try {
+                const res = await fetch('/get_subgraph', {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify({ target_ip: targetIp })
+                });
+                const data = await res.json();
+
+                if (res.ok) {
+                    const nodes = data.nodes.map(n => ({ 
+                        id: n.ip, 
+                        label: n.ip, 
+                        size: Math.min(50, Math.max(5, n.total_traffic / 1000000)) 
+                    }));
+                    const edges = data.edges.map(e => ({ 
+                        source: e.source, 
+                        target: e.target, 
+                        size: Math.min(10, Math.max(1, e.data_size / 1000000)) 
+                    }));
+                    
+                    lastSubgraphData = { nodes, edges };
+                    document.getElementById('graphContainer').style.display = 'block';
+                    
+                    tabs.forEach(t => t.classList.remove('active'));
+                    tabContents.forEach(c => c.classList.remove('active'));
+                    document.querySelector('[data-tab="graph"]').classList.add('active');
+                    document.getElementById('graph').classList.add('active');
+                    
+                    renderGraph(nodes, edges, document.getElementById('graphContainer'));
+                    showResults([{ type: 'info', text: `子图包含 ${nodes.length} 个节点和 ${edges.length} 条边（目标IP: ${targetIp}）` }]);
+                } else {
+                    showResults([{ type: 'error', text: data.error }]);
+                }
+            } catch (err) {
+                showResults([{ type: 'error', text: '获取子图失败: ' + err.message }]);
+            }
+        });
+
+        document.getElementById('btnListSubgraphs').addEventListener('click', async () => {
+            try {
+                const res = await fetch('/list_subgraphs');
+                const data = await res.json();
+
+                if (res.ok) {
+                    const items = data.map((sg, i) => ({
+                        type: 'subgraph',
+                        root: sg.root,
+                        size: sg.size,
+                        nodes: sg.nodes
+                    }));
+                    showResults(items);
+                } else {
+                    showResults([{ type: 'error', text: data.error }]);
+                }
+            } catch (err) {
+                showResults([{ type: 'error', text: '获取子图列表失败: ' + err.message }]);
+            }
+        });
+
+        document.getElementById('btnShowLastSubgraph').addEventListener('click', () => {
+            if (!lastSubgraphData) return;
+
+            document.getElementById('graphContainer').style.display = 'block';
+
+            tabs.forEach(t => t.classList.remove('active'));
+            tabContents.forEach(c => c.classList.remove('active'));
+            document.querySelector('[data-tab="graph"]').classList.add('active');
+            document.getElementById('graph').classList.add('active');
+
+            renderGraph(lastSubgraphData.nodes, lastSubgraphData.edges, document.getElementById('graphContainer'));
+            showResults([{ type: 'info', text: `显示子图: ${lastSubgraphData.nodes.length} 个节点, ${lastSubgraphData.edges.length} 条边` }]);
+        });
     </script>
 </body>
 </html>
